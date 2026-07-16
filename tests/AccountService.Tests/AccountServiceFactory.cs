@@ -9,7 +9,7 @@ namespace AccountService.Tests;
 /// isolated and can run in parallel. A file (not ":memory:") is used because an
 /// in-memory SQLite database lives only as long as its connection.
 /// </summary>
-public sealed class AccountServiceFactory(string environment = "Testing") : WebApplicationFactory<Program>
+public sealed class AccountServiceFactory(string environment = "Testing") : WebApplicationFactory<IAccountServiceApi>
 {
     private readonly string _databasePath =
         Path.Combine(Path.GetTempPath(), $"accounts-test-{Guid.NewGuid():N}.db");
