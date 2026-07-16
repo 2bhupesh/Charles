@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Gateway.Clients;
 using Gateway.Contracts;
 using Gateway.Data;
+using Gateway.Diagnostics;
 using Gateway.Domain;
 using Gateway.Http;
 using Gateway.Validation;
@@ -56,12 +57,14 @@ public static class EventEndpoints
         SubmitEventRequest? request,
         GatewayDbContext db,
         AccountServiceClient accountService,
+        GatewayMetrics metrics,
         HttpContext context,
         ILogger<Event> logger,
         CancellationToken cancellationToken)
     {
         if (!EventRequestValidator.TryValidate(request, out var eventTimestamp, out var errors))
         {
+            metrics.EventRejected();
             logger.LogWarning("Rejected event {EventId}: {FieldCount} invalid field(s)",
                 request?.EventId, errors.Count);
             return ProblemResults.Validation(errors);
@@ -72,6 +75,7 @@ public static class EventEndpoints
         // Already applied: return the original, call nothing, change nothing.
         if (stored is { Status: EventStatus.Applied })
         {
+            metrics.EventDuplicate();
             logger.LogInformation("Event {EventId} is a duplicate of an applied event; returning the original",
                 stored.EventId);
             return Results.Ok(ToResponse(stored));
@@ -113,6 +117,8 @@ public static class EventEndpoints
                 db.Entry(@event).State = EntityState.Detached;
 
                 var winner = await db.Events.SingleAsync(e => e.EventId == request.EventId, cancellationToken);
+
+                metrics.EventDuplicate();
                 logger.LogInformation("Event {EventId} lost an insert race; returning the stored event",
                     winner.EventId);
                 return Results.Ok(ToResponse(winner));
@@ -131,19 +137,26 @@ public static class EventEndpoints
                     @event.EventId, @event.AccountId);
 
                 // A retry of a PENDING event is not a fresh creation, so it answers 200.
-                return isRetryOfPending
-                    ? Results.Ok(ToResponse(@event))
-                    : Results.Created($"/events/{@event.EventId}", ToResponse(@event));
+                if (isRetryOfPending)
+                {
+                    metrics.EventRetried();
+                    return Results.Ok(ToResponse(@event));
+                }
+
+                metrics.EventCreated();
+                return Results.Created($"/events/{@event.EventId}", ToResponse(@event));
 
             case AccountApplyOutcome.Rejected:
                 // The Gateway validated this event, so a downstream 400 means the two
                 // services disagree - a bug on our side, not the client's.
+                metrics.EventDownstreamRejected();
                 logger.LogError("Event {EventId} was rejected by the Account Service after passing Gateway validation",
                     @event.EventId);
                 return ProblemResults.BadGateway(
                     "The Account Service rejected a validated transaction. The event was recorded but not applied.");
 
             default:
+                metrics.EventDownstreamUnavailable();
                 logger.LogWarning("Event {EventId} left PENDING: the Account Service is unavailable", @event.EventId);
                 return ProblemResults.AccountServiceUnavailable(context);
         }

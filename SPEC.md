@@ -357,19 +357,25 @@ Framework chatter is quietened to `Warning` (`System.Net.Http.HttpClient`, `Poll
 Via OpenTelemetry Metrics, exposed at `GET /metrics` (Prometheus exposition format) on both services:
 
 - `http_server_request_duration_seconds` histogram, labeled by route + status code (latency + request count + error rate derivable)
-- Gateway custom counters: `gateway_events_total{outcome="created|duplicate|rejected|downstream_unavailable"}` and `gateway_account_client_failures_total`
+- Gateway custom counters: `gateway_events_total{outcome="created|duplicate|retried|rejected|downstream_unavailable|downstream_rejected"}` and `gateway_account_client_failures_total{reason="unavailable|rejected"}`
 - Account Service custom counter: `account_transactions_applied_total{result="applied|replayed"}`
+
+The outcome sets are wider than first sketched because the write path has more distinct endings than a create/duplicate split admits: a `PENDING` event retried into `APPLIED` (`retried`) is neither, and a downstream `502` (`downstream_rejected`) is a different operational problem from a `503`. Counting by outcome rather than as one total is what makes the useful questions answerable — how much traffic is duplicate delivery, and how much is being turned away while the Account Service is down. `applied` vs `replayed` is the visible evidence that idempotency works: replays should be common and must never move a balance.
+
+Exposed via `OpenTelemetry.Exporter.Prometheus.AspNetCore`, which is still a `-beta` package — the only supported option, and its long-standing state.
 
 ---
 
 ## 9. Deployment — Docker Compose
 
-- One Dockerfile per service (multi-stage: `sdk:10.0` build → `aspnet:10.0` runtime).
+- One Dockerfile per service (multi-stage: `sdk:10.0` build → `aspnet:10.0` runtime). Build context is the repo root; the `.csproj` is copied and restored before the rest of the source so ordinary code edits reuse the cached package layer. `curl` is installed in the runtime image because the healthcheck needs it and the aspnet image does not ship it. Both run as the image's non-root `$APP_UID`.
 - `docker-compose.yml`:
-  - `gateway`: ports `8080:8080`; env `AccountService__BaseUrl=http://account-service:8081`; `depends_on: account-service (condition: service_healthy)`.
-  - `account-service`: **no host port mapping** (internal network only); healthcheck curls `/health`.
+  - `gateway`: ports `8080:8080`; env `AccountService__BaseUrl=http://account-service:8081`; `depends_on: account-service (condition: service_healthy)` — waiting for *healthy* rather than *started*, so a reviewer's first request does not hit a correct-but-confusing `503` while the downstream boots.
+  - `account-service`: **no host port mapping** (`expose` only) — internal-only made real rather than promised; healthcheck curls `/health`.
   - SQLite files live inside each container (ephemeral by design for this assignment).
 - Non-Docker fallback documented in README: two `dotnet run` commands with the base-URL env var.
+
+> **Verification status:** `docker compose config` validates, and the `AccountService__BaseUrl` wiring the compose file depends on is verified against the real services. `docker compose up --build` itself is **unverified**: this machine cannot pull from `mcr.microsoft.com`, whose IPv6 addresses are unreachable from this network while its IPv4 works (`curl -6` fails, `curl -4` returns 200; Docker Hub and NuGet are unaffected because they resolve to reachable addresses). The Dockerfiles and compose file are therefore reviewed but not executed here.
 
 ---
 

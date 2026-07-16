@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using AccountService.Data;
+using AccountService.Diagnostics;
 using AccountService.Endpoints;
 using AccountService.Logging;
 using AccountService.Serialization;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
@@ -18,6 +20,8 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole(options => options.FormatterName = JsonLogFormatter.FormatterName);
 builder.Logging.AddConsoleFormatter<JsonLogFormatter, JsonLogFormatterOptions>(
     options => options.ServiceName = ServiceName);
+
+builder.Services.AddSingleton<AccountMetrics>();
 
 // Tracing (SPEC 8.1). ASP.NET Core continues the W3C traceparent the Gateway sends, which
 // is what makes a single client request traceable across both services. No outbound
@@ -32,6 +36,15 @@ builder.Services.AddOpenTelemetry()
 
         if (!string.IsNullOrWhiteSpace(otlpEndpoint))
             tracing.AddOtlpExporter(exporter => exporter.Endpoint = new Uri(otlpEndpoint));
+    })
+    // Metrics on GET /metrics in Prometheus format (SPEC 8.3). ASP.NET Core instrumentation
+    // supplies http_server_request_duration_seconds - request count, latency and error rate
+    // are all derivable from one histogram labelled by route and status.
+    .WithMetrics(metrics =>
+    {
+        metrics.AddAspNetCoreInstrumentation();
+        metrics.AddMeter(AccountMetrics.MeterName);
+        metrics.AddPrometheusExporter();
     });
 
 // Pooling is disabled deliberately. EF Core registers user-defined functions on each
@@ -102,6 +115,7 @@ using (var scope = app.Services.CreateScope())
 }
 
 app.MapAccountEndpoints();
+app.MapPrometheusScrapingEndpoint();
 
 app.Run();
 

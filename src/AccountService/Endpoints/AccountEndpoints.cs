@@ -1,5 +1,6 @@
 using AccountService.Contracts;
 using AccountService.Data;
+using AccountService.Diagnostics;
 using AccountService.Domain;
 using AccountService.Http;
 using AccountService.Validation;
@@ -30,6 +31,7 @@ public static class AccountEndpoints
         string accountId,
         ApplyTransactionRequest? request,
         AccountDbContext db,
+        AccountMetrics metrics,
         ILogger<AccountTransaction> logger,
         CancellationToken cancellationToken)
     {
@@ -45,6 +47,7 @@ public static class AccountEndpoints
 
         if (existing is not null)
         {
+            metrics.Replayed();
             logger.LogInformation("Event {EventId} already applied to account {AccountId}; replay ignored",
                 existing.EventId, existing.AccountId);
             return Results.Ok(ToResponse(existing));
@@ -77,11 +80,14 @@ public static class AccountEndpoints
             var winner = await db.Transactions
                 .SingleAsync(t => t.EventId == request.EventId, cancellationToken);
 
+            // A lost race is a replay by another name: the event is applied exactly once.
+            metrics.Replayed();
             logger.LogInformation("Event {EventId} lost an insert race; returning the stored transaction",
                 winner.EventId);
             return Results.Ok(ToResponse(winner));
         }
 
+        metrics.Applied();
         logger.LogInformation("Applied {Type} of {Amount} {Currency} to account {AccountId} for event {EventId}",
             transaction.Type, transaction.Amount, transaction.Currency, transaction.AccountId, transaction.EventId);
 

@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net.Http.Json;
+using Gateway.Diagnostics;
 using Gateway.Domain;
 using Polly.CircuitBreaker;
 using Polly.Timeout;
@@ -43,7 +44,11 @@ public enum AccountApplyOutcome
 /// layered onto this client in Phase 3; retrying is safe because the downstream apply is
 /// idempotent by eventId.
 /// </summary>
-public sealed class AccountServiceClient(HttpClient httpClient, AccountServiceAvailability availability, ILogger<AccountServiceClient> logger)
+public sealed class AccountServiceClient(
+    HttpClient httpClient,
+    AccountServiceAvailability availability,
+    GatewayMetrics metrics,
+    ILogger<AccountServiceClient> logger)
 {
     /// <summary>Full precision, UTC, Z-form: the Account Service should store exactly the
     /// timestamp the Gateway stored, not a truncated copy of it.</summary>
@@ -77,13 +82,14 @@ public sealed class AccountServiceClient(HttpClient httpClient, AccountServiceAv
             {
                 // It answered, so it is reachable - it just disagreed with us.
                 availability.MarkReachable();
+                metrics.AccountClientRejected();
                 logger.LogError(
                     "Account Service rejected event {EventId} with {StatusCode}; the services disagree about the contract",
                     @event.EventId, (int)response.StatusCode);
                 return AccountApplyOutcome.Rejected;
             }
 
-            availability.MarkUnreachable();
+            MarkUnavailable();
             logger.LogWarning("Account Service returned {StatusCode} applying event {EventId}",
                 (int)response.StatusCode, @event.EventId);
             return AccountApplyOutcome.Unavailable;
@@ -93,20 +99,20 @@ public sealed class AccountServiceClient(HttpClient httpClient, AccountServiceAv
             // The breaker is open: sustained failure, so this call never left the process.
             // Failing fast here is the point - it protects both a struggling downstream
             // and the Gateway's own threads (SPEC 7).
-            availability.MarkUnreachable();
+            MarkUnavailable();
             logger.LogWarning(ex, "Circuit is open; failing fast without calling the Account Service for event {EventId}",
                 @event.EventId);
             return AccountApplyOutcome.Unavailable;
         }
         catch (HttpRequestException ex)
         {
-            availability.MarkUnreachable();
+            MarkUnavailable();
             logger.LogWarning(ex, "Account Service unreachable applying event {EventId}", @event.EventId);
             return AccountApplyOutcome.Unavailable;
         }
         catch (TimeoutRejectedException ex)
         {
-            availability.MarkUnreachable();
+            MarkUnavailable();
             logger.LogWarning(ex, "Account Service timed out applying event {EventId}", @event.EventId);
             return AccountApplyOutcome.Unavailable;
         }
@@ -114,7 +120,7 @@ public sealed class AccountServiceClient(HttpClient httpClient, AccountServiceAv
         {
             // The HttpClient timed out. A cancellation from the caller is not our failure,
             // so that case is deliberately left to propagate.
-            availability.MarkUnreachable();
+            MarkUnavailable();
             logger.LogWarning(ex, "Account Service timed out applying event {EventId}", @event.EventId);
             return AccountApplyOutcome.Unavailable;
         }
@@ -125,6 +131,16 @@ public sealed class AccountServiceClient(HttpClient httpClient, AccountServiceAv
     /// so the Gateway is the only way a client can see a balance at all - which is why an
     /// unreachable downstream has to surface as a clear 503 rather than a bare failure.
     /// </summary>
+    /// <summary>
+    /// A failed call is both a health signal and a metric, and they must never disagree -
+    /// so one call site records both.
+    /// </summary>
+    private void MarkUnavailable()
+    {
+        availability.MarkUnreachable();
+        metrics.AccountClientUnavailable();
+    }
+
     public async Task<BalanceLookup> GetBalanceAsync(string accountId, CancellationToken cancellationToken)
     {
         var path = $"/accounts/{Uri.EscapeDataString(accountId)}/balance";
@@ -141,7 +157,7 @@ public sealed class AccountServiceClient(HttpClient httpClient, AccountServiceAv
 
             if (!response.IsSuccessStatusCode)
             {
-                availability.MarkUnreachable();
+                MarkUnavailable();
                 logger.LogWarning("Account Service returned {StatusCode} reading the balance for account {AccountId}",
                     (int)response.StatusCode, accountId);
                 return new BalanceLookup(BalanceOutcome.Unavailable, null);
@@ -156,26 +172,26 @@ public sealed class AccountServiceClient(HttpClient httpClient, AccountServiceAv
         }
         catch (BrokenCircuitException ex)
         {
-            availability.MarkUnreachable();
+            MarkUnavailable();
             logger.LogWarning(ex, "Circuit is open; failing fast without reading the balance for account {AccountId}",
                 accountId);
             return new BalanceLookup(BalanceOutcome.Unavailable, null);
         }
         catch (HttpRequestException ex)
         {
-            availability.MarkUnreachable();
+            MarkUnavailable();
             logger.LogWarning(ex, "Account Service unreachable reading the balance for account {AccountId}", accountId);
             return new BalanceLookup(BalanceOutcome.Unavailable, null);
         }
         catch (TimeoutRejectedException ex)
         {
-            availability.MarkUnreachable();
+            MarkUnavailable();
             logger.LogWarning(ex, "Account Service timed out reading the balance for account {AccountId}", accountId);
             return new BalanceLookup(BalanceOutcome.Unavailable, null);
         }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
-            availability.MarkUnreachable();
+            MarkUnavailable();
             logger.LogWarning(ex, "Account Service timed out reading the balance for account {AccountId}", accountId);
             return new BalanceLookup(BalanceOutcome.Unavailable, null);
         }

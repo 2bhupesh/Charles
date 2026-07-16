@@ -1,0 +1,47 @@
+services:
+  account-service:
+    build:
+      context: .
+      dockerfile: src/AccountService/Dockerfile
+    # Deliberately no host port mapping: the Account Service is internal (SPEC 1). It is
+    # reachable from the gateway over the compose network and from nowhere else, which is
+    # the assignment's "not exposed to external clients" made real rather than promised.
+    expose:
+      - "8081"
+    networks:
+      - event-ledger
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8081/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      # Generous: the first request also creates the SQLite schema.
+      start_period: 20s
+
+  gateway:
+    build:
+      context: .
+      dockerfile: src/Gateway/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      # Double underscore is the .NET convention for nesting: AccountService:BaseUrl.
+      AccountService__BaseUrl: http://account-service:8081
+    depends_on:
+      account-service:
+        # Waits for healthy, not merely started - otherwise the gateway's first requests
+        # would 503 while the downstream is still booting. The 503 would be correct, but
+        # a reviewer running `compose up` should not have to know that.
+        condition: service_healthy
+    networks:
+      - event-ledger
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+networks:
+  event-ledger:
+    driver: bridge
