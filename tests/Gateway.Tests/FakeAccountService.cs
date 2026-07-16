@@ -54,6 +54,33 @@ internal sealed class FakeAccountService : IDisposable
             .RespondWith(Response.Create().WithStatusCode(statusCode));
     }
 
+    /// <summary>
+    /// Fails the first call and applies every one after it - a transient blip, expressed as
+    /// a state transition rather than a sleep, so the retry test cannot flake on timing.
+    /// </summary>
+    public void RespondFailingOnceThenApplied()
+    {
+        _server.ResetMappings();
+        _server.ResetScenarios();
+
+        _server
+            .Given(Request.Create().WithPath(new WildcardMatcher(TransactionsPath)).UsingPost())
+            .InScenario("transient-blip")
+            .WillSetStateTo("recovered")
+            .RespondWith(Response.Create().WithStatusCode(500));
+
+        _server
+            .Given(Request.Create().WithPath(new WildcardMatcher(TransactionsPath)).UsingPost())
+            .InScenario("transient-blip")
+            .WhenStateIs("recovered")
+            .RespondWith(Response.Create()
+                .WithStatusCode(201)
+                .WithHeader("Content-Type", "application/json")
+                .WithBody("""
+                    {"eventId":"evt-1","accountId":"acct-1","type":"CREDIT","amount":150.00,"currency":"USD","eventTimestamp":"2026-05-15T14:02:11Z","appliedAt":"2026-07-16T09:00:01Z"}
+                    """));
+    }
+
     /// <summary>Takes the downstream away entirely; its port then refuses connections.</summary>
     public void Stop() => _server.Stop();
 

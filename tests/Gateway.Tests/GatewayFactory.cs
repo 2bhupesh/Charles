@@ -16,10 +16,16 @@ namespace Gateway.Tests;
 /// Used by the integration test to reach a real in-process Account Service, which has no
 /// socket to dial.
 /// </param>
+/// <param name="settings">
+/// Extra configuration, chiefly the AccountService:Resilience:* keys - the reason those
+/// live in configuration is so a test can trip the circuit breaker in milliseconds
+/// instead of waiting out the production sampling window.
+/// </param>
 public sealed class GatewayFactory(
     string accountServiceBaseUrl,
     string environment = "Testing",
-    HttpMessageHandler? accountServiceHandler = null)
+    HttpMessageHandler? accountServiceHandler = null,
+    IReadOnlyDictionary<string, string>? settings = null)
     : WebApplicationFactory<IGatewayApi>
 {
     private readonly string _databasePath =
@@ -30,6 +36,9 @@ public sealed class GatewayFactory(
         builder.UseSetting("ConnectionStrings:EventsDb", $"Data Source={_databasePath}");
         builder.UseSetting("AccountService:BaseUrl", accountServiceBaseUrl);
         builder.UseEnvironment(environment);
+
+        foreach (var (key, value) in settings ?? new Dictionary<string, string>())
+            builder.UseSetting(key, value);
 
         if (accountServiceHandler is null)
             return;

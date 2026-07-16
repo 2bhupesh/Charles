@@ -33,6 +33,21 @@ public static class ProblemResults
             title: "Service unavailable");
     }
 
+    /// <summary>
+    /// A balance cannot be served from local data - only the Account Service knows it - so
+    /// the error says plainly which dependency is down rather than implying the account or
+    /// the Gateway is at fault (SPEC 6).
+    /// </summary>
+    public static IResult BalanceUnavailable(HttpContext context)
+    {
+        context.Response.Headers.RetryAfter = "5";
+
+        return Results.Problem(
+            detail: "Account Service is unreachable, so the balance cannot be retrieved. The Gateway's event endpoints are unaffected.",
+            statusCode: StatusCodes.Status503ServiceUnavailable,
+            title: "Service unavailable");
+    }
+
     public static IResult BadGateway(string detail) =>
         Results.Problem(
             detail: detail,

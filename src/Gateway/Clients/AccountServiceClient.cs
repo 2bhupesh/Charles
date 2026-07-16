@@ -1,8 +1,27 @@
 using System.Globalization;
 using System.Net.Http.Json;
 using Gateway.Domain;
+using Polly.CircuitBreaker;
+using Polly.Timeout;
 
 namespace Gateway.Clients;
+
+/// <summary>What a balance read found.</summary>
+public enum BalanceOutcome
+{
+    Found,
+
+    /// <summary>The account has no transactions, so it does not exist yet (SPEC 2.2).</summary>
+    NotFound,
+
+    /// <summary>The Account Service could not be reached; no balance can be reported.</summary>
+    Unavailable
+}
+
+/// <summary>A balance as the Account Service reports it (SPEC 4.2).</summary>
+public sealed record AccountBalance(string AccountId, decimal Balance, string Currency);
+
+public sealed record BalanceLookup(BalanceOutcome Outcome, AccountBalance? Balance);
 
 /// <summary>What the Account Service did with a transaction, from the Gateway's point of view.</summary>
 public enum AccountApplyOutcome
@@ -69,10 +88,26 @@ public sealed class AccountServiceClient(HttpClient httpClient, AccountServiceAv
                 (int)response.StatusCode, @event.EventId);
             return AccountApplyOutcome.Unavailable;
         }
+        catch (BrokenCircuitException ex)
+        {
+            // The breaker is open: sustained failure, so this call never left the process.
+            // Failing fast here is the point - it protects both a struggling downstream
+            // and the Gateway's own threads (SPEC 7).
+            availability.MarkUnreachable();
+            logger.LogWarning(ex, "Circuit is open; failing fast without calling the Account Service for event {EventId}",
+                @event.EventId);
+            return AccountApplyOutcome.Unavailable;
+        }
         catch (HttpRequestException ex)
         {
             availability.MarkUnreachable();
             logger.LogWarning(ex, "Account Service unreachable applying event {EventId}", @event.EventId);
+            return AccountApplyOutcome.Unavailable;
+        }
+        catch (TimeoutRejectedException ex)
+        {
+            availability.MarkUnreachable();
+            logger.LogWarning(ex, "Account Service timed out applying event {EventId}", @event.EventId);
             return AccountApplyOutcome.Unavailable;
         }
         catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
@@ -82,6 +117,67 @@ public sealed class AccountServiceClient(HttpClient httpClient, AccountServiceAv
             availability.MarkUnreachable();
             logger.LogWarning(ex, "Account Service timed out applying event {EventId}", @event.EventId);
             return AccountApplyOutcome.Unavailable;
+        }
+    }
+
+    /// <summary>
+    /// Reads a balance on behalf of a client (SPEC 3.6). The Account Service is internal,
+    /// so the Gateway is the only way a client can see a balance at all - which is why an
+    /// unreachable downstream has to surface as a clear 503 rather than a bare failure.
+    /// </summary>
+    public async Task<BalanceLookup> GetBalanceAsync(string accountId, CancellationToken cancellationToken)
+    {
+        var path = $"/accounts/{Uri.EscapeDataString(accountId)}/balance";
+
+        try
+        {
+            using var response = await httpClient.GetAsync(path, cancellationToken);
+
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                availability.MarkReachable();
+                return new BalanceLookup(BalanceOutcome.NotFound, null);
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                availability.MarkUnreachable();
+                logger.LogWarning("Account Service returned {StatusCode} reading the balance for account {AccountId}",
+                    (int)response.StatusCode, accountId);
+                return new BalanceLookup(BalanceOutcome.Unavailable, null);
+            }
+
+            availability.MarkReachable();
+
+            var balance = await response.Content.ReadFromJsonAsync<AccountBalance>(cancellationToken);
+            return balance is null
+                ? new BalanceLookup(BalanceOutcome.Unavailable, null)
+                : new BalanceLookup(BalanceOutcome.Found, balance);
+        }
+        catch (BrokenCircuitException ex)
+        {
+            availability.MarkUnreachable();
+            logger.LogWarning(ex, "Circuit is open; failing fast without reading the balance for account {AccountId}",
+                accountId);
+            return new BalanceLookup(BalanceOutcome.Unavailable, null);
+        }
+        catch (HttpRequestException ex)
+        {
+            availability.MarkUnreachable();
+            logger.LogWarning(ex, "Account Service unreachable reading the balance for account {AccountId}", accountId);
+            return new BalanceLookup(BalanceOutcome.Unavailable, null);
+        }
+        catch (TimeoutRejectedException ex)
+        {
+            availability.MarkUnreachable();
+            logger.LogWarning(ex, "Account Service timed out reading the balance for account {AccountId}", accountId);
+            return new BalanceLookup(BalanceOutcome.Unavailable, null);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            availability.MarkUnreachable();
+            logger.LogWarning(ex, "Account Service timed out reading the balance for account {AccountId}", accountId);
+            return new BalanceLookup(BalanceOutcome.Unavailable, null);
         }
     }
 }

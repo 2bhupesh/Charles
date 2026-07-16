@@ -70,7 +70,12 @@ public sealed class EndToEndIntegrationTests : IDisposable
 
         var responses = await Task.WhenAll(attempts);
 
-        Assert.All(responses, r => Assert.Contains(r.StatusCode, new[] { HttpStatusCode.Created, HttpStatusCode.OK }));
+        var outcomes = await Task.WhenAll(responses.Select(async r =>
+            $"{(int)r.StatusCode} {await r.Content.ReadAsStringAsync()}"));
+
+        Assert.All(responses, r => Assert.True(
+            r.StatusCode is HttpStatusCode.Created or HttpStatusCode.OK,
+            $"unexpected outcome; all 8 were:\n{string.Join("\n", outcomes)}"));
 
         var balance = await _accounts.GetFromJsonAsync<BalanceResponse>("/accounts/acct-1/balance");
         Assert.Equal(150.00m, balance!.Balance);

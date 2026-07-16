@@ -20,7 +20,30 @@ public static class EventEndpoints
         app.MapPost("/events", SubmitEvent);
         app.MapGet("/events/{id}", GetEvent);
         app.MapGet("/events", ListEvents);
+        app.MapGet("/accounts/{accountId}/balance", GetBalance);
         app.MapGet("/health", GetHealth);
+    }
+
+    /// <summary>
+    /// Proxies a balance read to the Account Service (SPEC 3.6). Unlike the event
+    /// endpoints this cannot be answered locally - the Gateway does not compute balances,
+    /// the Account Service owns them - so when the downstream is unreachable there is
+    /// nothing to degrade to and the client is told exactly that.
+    /// </summary>
+    private static async Task<IResult> GetBalance(
+        string accountId,
+        AccountServiceClient accountService,
+        HttpContext context,
+        CancellationToken cancellationToken)
+    {
+        var lookup = await accountService.GetBalanceAsync(accountId, cancellationToken);
+
+        return lookup.Outcome switch
+        {
+            BalanceOutcome.Found => Results.Ok(lookup.Balance),
+            BalanceOutcome.NotFound => ProblemResults.NotFound($"Account '{accountId}' has no transactions."),
+            _ => ProblemResults.BalanceUnavailable(context)
+        };
     }
 
     /// <summary>
