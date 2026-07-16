@@ -3,6 +3,7 @@ using AccountService.Data;
 using AccountService.Endpoints;
 using AccountService.Serialization;
 using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -16,8 +17,20 @@ builder.Logging.AddJsonConsole(options =>
     options.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
 });
 
-builder.Services.AddDbContext<AccountDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("AccountsDb") ?? "Data Source=accounts.db"));
+// Pooling is disabled deliberately. EF Core registers user-defined functions on each
+// SQLite connection, and Microsoft.Data.Sqlite unregisters them when a connection is
+// returned to the pool. Under concurrent requests that cleanup can race with statements
+// still active on the connection and throw SQLite error 5 ("unable to delete/modify
+// user-function due to active statements"), surfacing as a 500 on an otherwise valid
+// request. Opening a connection to a local file is cheap, so the pool buys little here
+// and costs correctness under load.
+var connectionString = new SqliteConnectionStringBuilder(
+    builder.Configuration.GetConnectionString("AccountsDb") ?? "Data Source=accounts.db")
+{
+    Pooling = false
+}.ToString();
+
+builder.Services.AddDbContext<AccountDbContext>(options => options.UseSqlite(connectionString));
 
 // SPEC 6: every ProblemDetails carries the trace ID, so a client-reported error can be
 // found in the logs. Done centrally so framework-generated problems (malformed JSON,
