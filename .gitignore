@@ -480,3 +480,8 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# SQLite databases are runtime artifacts; each service recreates its own on startup.
+*.db
+*.db-shm
+*.db-wal
