@@ -4,7 +4,7 @@
 
 Take-home assignment ([Requirment.md](Requirment.md)): build an **Event Ledger** of two C#/ASP.NET Core microservices — a public **Event Gateway API** and an internal **Account Service** — handling financial transaction events with idempotency, out-of-order tolerance, distributed tracing, resiliency, tests, Docker Compose, and a README.
 
-**Stack:** .NET 8 (LTS), ASP.NET Core Minimal APIs, EF Core + SQLite (one embedded DB per service), Polly v8 via `Microsoft.Extensions.Http.Resilience`, OpenTelemetry, xUnit + WireMock.Net.
+**Stack:** .NET 10 (LTS), ASP.NET Core Minimal APIs, EF Core + SQLite (one embedded DB per service), Polly v8 via `Microsoft.Extensions.Http.Resilience`, OpenTelemetry, xUnit + WireMock.Net.
 **Scope:** all required items + two cheap bonuses (retry with exponential backoff + jitter, Prometheus `/metrics`).
 
 **Working style:** do NOT build everything at once. Build one service, write and pass its tests, commit — then move to the next phase. Each phase ends with green tests and a git commit (commit history is graded; no squashing). Only the current phase is planned in detail; later phases get detailed as we reach them.
@@ -13,8 +13,8 @@ Take-home assignment ([Requirment.md](Requirment.md)): build an **Event Ledger**
 
 ```
 event-ledger/
-├── Requirment.md, PLAN.md
-├── EventLedger.sln
+├── Requirment.md, PLAN.md, SPEC.md
+├── EventLedger.slnx
 ├── docker-compose.yml            (Phase 5)
 ├── README.md                     (Phase 6)
 ├── src/

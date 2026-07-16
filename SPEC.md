@@ -22,7 +22,7 @@ Client ──HTTP──▶ Event Gateway API ──HTTP (sync REST, resilient)�
 
 ### 1.1 Technology stack
 
-- **.NET 8 (LTS)**, ASP.NET Core Minimal APIs
+- **.NET 10 (LTS)**, ASP.NET Core Minimal APIs
 - **EF Core + SQLite**, one file-based database per service (`events.db`, `accounts.db`). `:memory:` is prohibited (connection-scoped lifetime). Tests use isolated per-test database files or shared-cache connections.
 - **Polly v8** via `Microsoft.Extensions.Http.Resilience` for the Gateway→Account Service client
 - **OpenTelemetry** for tracing and metrics; W3C Trace Context propagation
@@ -345,7 +345,7 @@ Via OpenTelemetry Metrics, exposed at `GET /metrics` (Prometheus exposition form
 
 ## 9. Deployment — Docker Compose
 
-- One Dockerfile per service (multi-stage: `sdk:8.0` build → `aspnet:8.0` runtime).
+- One Dockerfile per service (multi-stage: `sdk:10.0` build → `aspnet:10.0` runtime).
 - `docker-compose.yml`:
   - `gateway`: ports `8080:8080`; env `AccountService__BaseUrl=http://account-service:8081`; `depends_on: account-service (condition: service_healthy)`.
   - `account-service`: **no host port mapping** (internal network only); healthcheck curls `/health`.
