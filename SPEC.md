@@ -348,6 +348,10 @@ JSON console logs (one JSON object per line) with, at minimum:
 
 Required log points: request completion (method, path, status, duration), validation rejections (Warning), downstream call failures and circuit state changes (Warning/Error), event applied (Information). Never log full payloads at Information in case metadata carries sensitive data.
 
+Implemented by a per-service `JsonLogFormatter` (a `ConsoleFormatter`). The built-in JSON console formatter buries the trace ID in a nested `Scopes` array and has no place for a service name; promoting `traceId`, `spanId` and `service` to top-level fields is what makes "every line from both services for this one request" a single grep. The named holes of a structured message (`Event {EventId} applied`) become their own fields, so logs are filtered rather than grepped. Formatter-owned fields cannot be overwritten by a message's own state — a log line may not forge which service it came from.
+
+Framework chatter is quietened to `Warning` (`System.Net.Http.HttpClient`, `Polly`): at `Information` they added five lines of noise per request and buried the two that matter. Their `Warning`/`Error` events — retries, timeouts, circuit transitions — are required log points and remain.
+
 ### 8.3 Metrics (custom metric requirement + Prometheus bonus)
 
 Via OpenTelemetry Metrics, exposed at `GET /metrics` (Prometheus exposition format) on both services:
@@ -401,6 +405,10 @@ Runnable with `dotnet test` from the repo root. Naming: `MethodOrScenario_Condit
 | G11 | Downstream returns 400 | Not retried (§7) — a 4xx will not heal; `502` after exactly one call |
 | G12 | Circuit open, then break duration elapses and downstream recovers | Traffic flows again; `201` |
 | G13 | Balance proxy: found / unknown account / downstream down | `200` / `404` / `503` naming the Account Service (§3.6) |
+| G14 | No inbound `traceparent` | Gateway generates one; downstream still receives a valid W3C `traceparent` |
+| G15 | Retried downstream calls | Every attempt carries the same trace-id — retries do not fragment the trace |
+| G16 | Inbound `traceparent` + validation failure | The `traceId` returned to the client is the inbound trace-id, so a reported error is findable in logs (§6) |
+| G17 | Log formatter (unit, both services) | `traceId`/`spanId`/`service` at top level; message holes promoted to fields; state cannot overwrite formatter-owned fields |
 
 ### 10.3 Integration (`tests/Gateway.Tests`, both real services in-process)
 

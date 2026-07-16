@@ -1,21 +1,38 @@
 using System.Diagnostics;
 using AccountService.Data;
 using AccountService.Endpoints;
+using AccountService.Logging;
 using AccountService.Serialization;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Structured JSON logs (SPEC 8.2). Trace-ID enrichment arrives with OpenTelemetry in Phase 4.
+const string ServiceName = "account-service";
+
+// Structured JSON logs carrying the trace ID and service name (SPEC 8.2).
 builder.Logging.ClearProviders();
-builder.Logging.AddJsonConsole(options =>
-{
-    options.IncludeScopes = true;
-    options.UseUtcTimestamp = true;
-    options.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
-});
+builder.Logging.AddConsole(options => options.FormatterName = JsonLogFormatter.FormatterName);
+builder.Logging.AddConsoleFormatter<JsonLogFormatter, JsonLogFormatterOptions>(
+    options => options.ServiceName = ServiceName);
+
+// Tracing (SPEC 8.1). ASP.NET Core continues the W3C traceparent the Gateway sends, which
+// is what makes a single client request traceable across both services. No outbound
+// instrumentation: this service calls nobody.
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService(ServiceName))
+    .WithTracing(tracing =>
+    {
+        tracing.AddAspNetCoreInstrumentation();
+
+        var otlpEndpoint = builder.Configuration["Otlp:Endpoint"];
+
+        if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+            tracing.AddOtlpExporter(exporter => exporter.Endpoint = new Uri(otlpEndpoint));
+    });
 
 // Pooling is disabled deliberately. EF Core registers user-defined functions on each
 // SQLite connection, and Microsoft.Data.Sqlite unregisters them when a connection is
@@ -56,14 +73,25 @@ app.UseExceptionHandler(new ExceptionHandlerOptions
 });
 app.UseStatusCodePages();
 
-// Every log line carries the service name so the two services stay distinguishable
-// once their output is interleaved (SPEC 8.2).
+// Request completion (SPEC 8.2). The formatter stamps the service name and trace ID onto
+// every line, so no scope is needed for those.
+var requestLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Request");
+
 app.Use(async (context, next) =>
 {
-    var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Request");
-    using (logger.BeginScope(new Dictionary<string, object> { ["service"] = "account-service" }))
+    var start = Stopwatch.GetTimestamp();
+
+    try
     {
         await next();
+    }
+    finally
+    {
+        requestLogger.LogInformation("{Method} {Path} responded {StatusCode} in {DurationMs:F1}ms",
+            context.Request.Method,
+            context.Request.Path.Value,
+            context.Response.StatusCode,
+            Stopwatch.GetElapsedTime(start).TotalMilliseconds);
     }
 });
 

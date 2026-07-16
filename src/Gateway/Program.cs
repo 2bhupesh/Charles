@@ -2,22 +2,43 @@ using System.Diagnostics;
 using Gateway.Clients;
 using Gateway.Data;
 using Gateway.Endpoints;
+using Gateway.Logging;
 using Gateway.Serialization;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Http.Resilience;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Structured JSON logs (SPEC 8.2). Trace-ID enrichment arrives with OpenTelemetry in Phase 4.
+const string ServiceName = "gateway";
+
+// Structured JSON logs carrying the trace ID and service name (SPEC 8.2).
 builder.Logging.ClearProviders();
-builder.Logging.AddJsonConsole(options =>
-{
-    options.IncludeScopes = true;
-    options.UseUtcTimestamp = true;
-    options.TimestampFormat = "yyyy-MM-ddTHH:mm:ss.fffZ";
-});
+builder.Logging.AddConsole(options => options.FormatterName = JsonLogFormatter.FormatterName);
+builder.Logging.AddConsoleFormatter<JsonLogFormatter, JsonLogFormatterOptions>(
+    options => options.ServiceName = ServiceName);
+
+// Tracing (SPEC 8.1). ASP.NET Core starts a trace per inbound request, continuing an
+// inbound W3C traceparent when the caller sent one, and .NET propagates it onward over
+// HttpClient automatically - so one client request is one trace ID across both services.
+//
+// No exporter is required: the logs carry the IDs. An OTLP endpoint is left configurable
+// so traces can be pointed at Jaeger without a code change.
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(resource => resource.AddService(ServiceName))
+    .WithTracing(tracing =>
+    {
+        tracing.AddAspNetCoreInstrumentation();
+        tracing.AddHttpClientInstrumentation();
+
+        var otlpEndpoint = builder.Configuration["Otlp:Endpoint"];
+
+        if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+            tracing.AddOtlpExporter(exporter => exporter.Endpoint = new Uri(otlpEndpoint));
+    });
 
 // Pooling is disabled deliberately - see the same note in the Account Service. EF Core
 // registers user-defined functions per SQLite connection and Microsoft.Data.Sqlite
@@ -83,14 +104,25 @@ app.UseExceptionHandler(new ExceptionHandlerOptions
 });
 app.UseStatusCodePages();
 
-// Every log line carries the service name so the two services stay distinguishable
-// once their output is interleaved (SPEC 8.2).
+// Request completion (SPEC 8.2). The formatter stamps the service name and trace ID onto
+// every line, so no scope is needed for those.
+var requestLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Request");
+
 app.Use(async (context, next) =>
 {
-    var logger = context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("Request");
-    using (logger.BeginScope(new Dictionary<string, object> { ["service"] = "gateway" }))
+    var start = Stopwatch.GetTimestamp();
+
+    try
     {
         await next();
+    }
+    finally
+    {
+        requestLogger.LogInformation("{Method} {Path} responded {StatusCode} in {DurationMs:F1}ms",
+            context.Request.Method,
+            context.Request.Path.Value,
+            context.Response.StatusCode,
+            Stopwatch.GetElapsedTime(start).TotalMilliseconds);
     }
 });
 

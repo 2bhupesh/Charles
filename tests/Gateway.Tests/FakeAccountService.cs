@@ -31,6 +31,21 @@ internal sealed class FakeAccountService : IDisposable
 
     public int ApplyCallCount => ApplyCalls.Count;
 
+    /// <summary>
+    /// The W3C traceparent header on each transaction POST, which is how the Gateway's
+    /// trace reaches the Account Service (SPEC 8.1).
+    /// </summary>
+    public IReadOnlyList<string?> ApplyTraceParents =>
+        _server.LogEntries
+            .Select(entry => entry.RequestMessage)
+            .Where(request => request is { Method: "POST" }
+                              && request.Path.EndsWith("/transactions", StringComparison.Ordinal))
+            .Select(request => request!.Headers?
+                .FirstOrDefault(header => string.Equals(header.Key, "traceparent", StringComparison.OrdinalIgnoreCase))
+                .Value?
+                .FirstOrDefault())
+            .ToList();
+
     /// <summary>201 for a fresh apply, or 200 to imitate a replay of an already-applied event.</summary>
     public void RespondApplied(int statusCode = 201)
     {
